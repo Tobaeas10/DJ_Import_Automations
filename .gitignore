@@ -1,0 +1,4 @@
+app/.numba_cache
+*.pyc
+.wav
+.mp3
