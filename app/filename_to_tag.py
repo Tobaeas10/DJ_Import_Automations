@@ -28,6 +28,81 @@ def load_audio(path):
     return None
 
 
+def strip_wav_list_chunks(path):
+    """
+    Remove any RIFF 'LIST' chunks (e.g. INFO: IART/INAM/ICMT/etc.) from a WAV file.
+
+    mutagen's WAVE class only reads/writes the 'id3 ' chunk. Many WAV files
+    (from DAWs, Explorer, Rekordbox, etc.) instead store metadata in an older
+    RIFF LIST/INFO chunk, which mutagen never touches -- so clearing ID3 tags
+    alone leaves that old metadata fully intact. WAV files essentially never
+    carry cover art in a LIST chunk, so it's safe to drop entirely here.
+    """
+    with open(path, "rb") as f:
+        data = f.read()
+
+    if data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+        return  # not a RIFF/WAVE file we understand; leave untouched
+
+    body = data[12:]
+    kept = bytearray()
+    removed_any = False
+    i = 0
+    while i + 8 <= len(body):
+        chunk_id = body[i:i + 4]
+        size = int.from_bytes(body[i + 4:i + 8], "little")
+        padded_size = size + (size & 1)  # chunks are word-aligned
+        chunk_total = 8 + padded_size
+        if i + chunk_total > len(body):
+            # malformed/truncated chunk size; keep the rest as-is rather than guess
+            kept.extend(body[i:])
+            break
+        if chunk_id == b"LIST":
+            removed_any = True
+        else:
+            kept.extend(body[i:i + chunk_total])
+        i += chunk_total
+
+    if not removed_any:
+        return
+
+    new_riff_size = 4 + len(kept)  # 'WAVE' + chunks
+    new_data = b"RIFF" + new_riff_size.to_bytes(4, "little") + b"WAVE" + bytes(kept)
+    with open(path, "wb") as f:
+        f.write(new_data)
+
+
+def write_wav_info_chunk(path, artist, title):
+    """
+    Write a RIFF LIST/INFO chunk containing IART (artist) and INAM (title).
+
+    Explorer and Rekordbox read WAV metadata from this legacy INFO chunk, not
+    from the ID3 chunk mutagen writes -- so after stripping the old INFO
+    chunk, we need to add a fresh one with the corrected values or those
+    tools will show blank/derived-from-filename metadata.
+    """
+    def info_subchunk(chunk_id, text):
+        data = text.encode("utf-8") + b"\x00"
+        if len(data) % 2:
+            data += b"\x00"  # word-align
+        return chunk_id + len(data).to_bytes(4, "little") + data
+
+    info_body = b"INFO" + info_subchunk(b"IART", artist) + info_subchunk(b"INAM", title)
+    list_chunk = b"LIST" + len(info_body).to_bytes(4, "little") + info_body
+
+    with open(path, "rb") as f:
+        data = f.read()
+
+    if data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+        return  # not a RIFF/WAVE file we understand; leave untouched
+
+    body = data[12:] + list_chunk
+    new_riff_size = 4 + len(body)  # 'WAVE' + chunks
+    new_data = b"RIFF" + new_riff_size.to_bytes(4, "little") + b"WAVE" + body
+    with open(path, "wb") as f:
+        f.write(new_data)
+
+
 def strip_tags_keep_cover(audio):
     """Delete every tag frame except APIC (cover art)."""
     if audio.tags is None:
@@ -41,13 +116,14 @@ def strip_tags_keep_cover(audio):
 
 
 def set_title_artist(audio, base_name):
-    """Split base_name on the first ' - ' into artist/title tags. False if no ' - ' found."""
+    """Split base_name on the first ' - ' into artist/title tags. Returns (artist, title) or None if no ' - ' found."""
     artist, sep, title = base_name.partition(" - ")
     if sep == "":
-        return False
-    audio.tags.add(TPE1(encoding=3, text=[artist.strip()]))
-    audio.tags.add(TIT2(encoding=3, text=[title.strip()]))
-    return True
+        return None
+    artist, title = artist.strip(), title.strip()
+    audio.tags.add(TPE1(encoding=3, text=[artist]))
+    audio.tags.add(TIT2(encoding=3, text=[title]))
+    return artist, title
 
 
 def retag_file(folder_path, name):
@@ -61,8 +137,15 @@ def retag_file(folder_path, name):
     try:
         audio = load_audio(path)
         strip_tags_keep_cover(audio)
-        set_title_artist(audio, base_name)
-        audio.save()
+        artist_title = set_title_artist(audio, base_name)
+        # v1=2 forces mutagen to also remove any legacy ID3v1 tag (the trailing
+        # 128 bytes some tools still read as a fallback) instead of rewriting it.
+        audio.save(v1=2)
+        if path.lower().endswith(".wav"):
+            strip_wav_list_chunks(path)
+            if artist_title is not None:
+                artist, title = artist_title
+                write_wav_info_chunk(path, artist, title)
     except Exception as e:
         print("---- Failed:", name, "--", e)
         return "failed"
