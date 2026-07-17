@@ -9,10 +9,10 @@ and writing artist/title tags from the filename.
 1. Install Python **3.10 or newer** from https://www.python.org/downloads/
    (tested on 3.14.6 — anything 3.10+ should work). On Windows, tick
    "Add python.exe to PATH" during install.
-2. Put the `_riddim_automation` folder inside whatever folder you want to
+2. Download the entire repository from GitHub. Extract it inside the folder you want to
    work in (e.g. a folder on your Desktop or in Downloads — anywhere is
    fine, songs go in that same parent folder).
-3. Run `SETUP.py` once (double-click it, or run
+4. Run `SETUP.py` once (double-click it, or run
    `python SETUP.py` from a terminal inside `_riddim_automation`).
    It will:
    - check your Python version,
@@ -21,25 +21,24 @@ and writing artist/title tags from the filename.
      `scipy`) via pip (asks before doing anything),
    - create three launchers directly in your work folder — "___Step
      1___ Clean File Names and Re-encode", "___Step 2___ Check Audio
-     Quality", "___Step 3___ Convert File Names to Tag" — so you never
-     have to touch `_riddim_automation` again.
-4. From then on, drop songs into your work folder and double-click the
+     Quality", "___Step 3___ Convert File Names to Tag".
+5. From then on, drop songs into your work folder and double-click the
    launchers in order (Step 1, 2, 3) as needed.
 
 Your folder should end up looking like this:
 
 ```
 your work folder/
-├── _riddim_automation/
+├── DJ_Import_Automations-master/
 │   ├── SETUP.py                  <- the only thing you ever run directly
-│   └── app/                      <- everything else lives in here
+│   └── app/
 │       ├── audio_common.py
 │       ├── clean_file_names.py
 │       ├── check_quality.py
 │       └── filename_to_tag.py
 ├── ___Step 1___ Clean File Names and Re-encode.bat/.command/.sh   <- created by SETUP.py
-├── ___Step 2___ Check Audio Quality.bat/.command/.sh
-├── ___Step 3___ Convert File Names to Tag.bat/.command/.sh
+├── ___Step 2___ Check Audio Quality.bat/.command/.sh              <- created by SETUP.py
+├── ___Step 3___ Convert File Names to Tag.bat/.command/.sh        <- created by SETUP.py
 │
 │   songs to be analyzed go here
 ├── example artist - cool song.mp3
