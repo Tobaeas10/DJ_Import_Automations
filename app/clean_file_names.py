@@ -13,8 +13,8 @@ import subprocess
 
 import audio_common as common
 
-# Junk tags stripped wherever found, whitespace/parens optional, even glued
-# to another word ("NAMEv15" -> "NAME"). Longest/most specific first.
+"""Junk tags stripped wherever found, whitespace/parens optional, even glued
+to another word ("NAMEv15" -> "NAME"). Longest/most specific first."""
 JUNK_TAGS = [
     r"Original\s*Mix", r"Extended\s*Mix", r"Radio\s*Edit", r"Radio\s*Mix", r"Radio\s*Version",
     r"Club\s*Mix", r"Dub\s*Mix", r"Main\s*Mix", r"Album\s*Version", r"Single\s*Version",
@@ -22,21 +22,19 @@ JUNK_TAGS = [
     r"Free\s*Download", r"V\d+\s*Final",
     r"Original", r"Final", r"Full", r"Free", r"Remastered", r"Remaster", r"Instrumental",
     r"Acapella", r"Acappella", r"Clean", r"Dirty", r"Explicit", r"Snippet", r"Preview",
-    r"Demo", r"Unreleased", r"WIP", r"HQ", r"HD", r"V\d+",
+    r"Demo", r"Unreleased", r"WIP", r"HQ", r"HD", r"V\d+", r"!!!", r"™",
 ]
 
-# Artist names to not be Title-Cased
-NAME_ALLCAPS_FIXES = "LV, AD, NT, IITYX, TEOTI, IP, x87, DGE, DRS, LSB, MPH, JG, ID, DJ, AJ, JJD, FD"
-# Other name fixes, format: "Wrong -> Right, Wrong2 -> Right2"
-NAME_TEXT_FIXES = "Akira -> Akirah, Subz -> Subfiltronik"
+"""Word swaps: Need non-alphanumerical symbols around the word/phrase in order to match"""
+TEXT_FIXES = ("Vip Vip -> VIP2, Vip -> VIP, Bootleg -> Remix, X -> &, Vs -> &, "
+              "Akira -> Akirah, Subz -> Subfiltronik")
 
-NAME_CASE_FIXES = {w.strip().capitalize(): w.strip() for w in NAME_ALLCAPS_FIXES.split(",")}
-for pair in NAME_TEXT_FIXES.split(","):
-    wrong, right = pair.split("->")
-    NAME_CASE_FIXES[wrong.strip().capitalize()] = right.strip()
+"""Word swaps but only to prevent title-casing to mess up special names"""
+NAME_ALLCAPS_FIXES = "LV, AD, NT, IITYX, TEOTI, IP, x87, DGE, DRS, LSB, MPH, JG, ID, DJ, AJ, JJD, FD, R28D"
 
-# Small words that stay lowercase mid-segment, but never at the start/end of
-# a dash-separated segment (e.g. "The Road", "... My World")
+
+
+# Non-User-intended lists
 LOWERCASE_WORDS = ["Is", "To", "It", "Of", "By", "A", "An", "Out", "The", "From", "My"]
 
 PROCESSED_EXTENSIONS = (".wav", ".mp3")
@@ -62,16 +60,21 @@ def title_case_preserving_dots(file_name):
 def strip_junk_tags(name_part):
     """Remove JUNK_TAGS. Kept (and reported) instead of removed if more real
     text follows -- e.g. "Original Dubplate". Runs to a fixed point first so
-    ordering between tags doesn't cause false keeps."""
+    ordering between tags doesn't cause false keeps. Punctuation-only tags
+    skip the \\b word boundary, since \\b can't match next to punctuation."""
     def is_safe_tail(match):
         rest = match.string[match.end():].lstrip()
         return not rest or rest[0] in "-)"
+
+    def tag_pattern(tag):
+        boundary = r"\b" if re.search(r"\w", tag) else ""
+        return rf"\(?\s*{tag}{boundary}\s*\)?"
 
     changed = True
     while changed:
         changed = False
         for tag in JUNK_TAGS:
-            pattern = rf"\(?\s*{tag}\b\s*\)?"
+            pattern = tag_pattern(tag)
             new_name_part = re.sub(
                 pattern, lambda m: "" if is_safe_tail(m) else m.group(0),
                 name_part, flags=re.IGNORECASE,
@@ -82,16 +85,77 @@ def strip_junk_tags(name_part):
 
     kept = []
     for tag in JUNK_TAGS:
-        pattern = rf"\(?\s*{tag}\b\s*\)?"
+        pattern = tag_pattern(tag)
         kept += [m.group(0).strip() for m in re.finditer(pattern, name_part, re.IGNORECASE) if not is_safe_tail(m)]
 
     return name_part, kept
 
 
+def parse_fix_pairs(fix_string):
+    """Parse a 'Wrong -> Right, Wrong2 -> Right2' string into (wrong, right)
+    tuples, used by both TEXT_FIXES and NAME_TEXT_FIXES."""
+    pairs = []
+    for chunk in fix_string.split(","):
+        if "->" not in chunk:
+            continue
+        wrong, right = chunk.split("->", 1)
+        pairs.append((wrong.strip(), right.strip()))
+    return pairs
+
+
+def replace_with_word_boundaries(name_part, wrong, right):
+    """Replace wrong -> right, requiring a word boundary on any letter/digit
+    edge of `wrong` (so "VIP" won't match inside "AVIP", but "VIP)" can
+    still match against the parenthesis)."""
+    lead = r"\b" if wrong[:1].isalnum() else ""
+    trail = r"\b" if wrong[-1:].isalnum() else ""
+    return re.sub(lead + re.escape(wrong) + trail, right, name_part)
+
+
+_name_case_fixes = None
+
+
+def get_name_case_fixes():
+    """Build (once) the artist-name-casing dict from NAME_ALLCAPS_FIXES: maps
+    the title-cased mangled form (e.g. "Dj") back to the intended form
+    (e.g. "DJ")."""
+    global _name_case_fixes
+    if _name_case_fixes is None:
+        _name_case_fixes = {name.strip().capitalize(): name.strip() for name in NAME_ALLCAPS_FIXES.split(",")}
+    return _name_case_fixes
+
+
 def apply_name_fixes(name_part):
-    for wrong, right in NAME_CASE_FIXES.items():
+    for wrong, right in get_name_case_fixes().items():
         name_part = re.sub(rf"\b{re.escape(wrong)}\b", right, name_part)
     return name_part
+
+
+def apply_text_fixes(name_part):
+    for wrong, right in parse_fix_pairs(TEXT_FIXES):
+        name_part = replace_with_word_boundaries(name_part, wrong, right)
+    return name_part
+
+
+def convert_named_vip_to_remix(name_part):
+    """"(Someone VIP)" -> "(Someone Remix)" -- a VIP credited to a specific
+    remixer is really a remix. A bare "(VIP)" with nothing preceding it
+    inside the parens (e.g. "Kaycin - Kano (VIP)") is a true VIP and is
+    left untouched, since there's no remixer name to attribute it to."""
+    return re.sub(
+        r"\(([^()]+?)\s+VIP\)",
+        lambda m: f"({m.group(1)} Remix)",
+        name_part,
+        flags=re.IGNORECASE,
+    )
+
+
+def wrap_bare_vip(name_part):
+    """"Block VIP" -> "Block (VIP)". Only wraps a VIP that isn't already
+    inside parens -- run after convert_named_vip_to_remix, so any "(VIP)"
+    or "(Someone VIP)" that survives to this point is left alone rather
+    than double-wrapped into "((VIP))"."""
+    return re.sub(r"(?<!\()\bVIP\b(?!\))", "(VIP)", name_part, flags=re.IGNORECASE)
 
 
 def lowercase_small_words(name_part):
@@ -123,7 +187,24 @@ def merge_remixer_credit(name_part):
     return " - ".join(lead_segments) + f" ({remixer} Remix)"
 
 
+def clean_name_part(name_part):
+    """Regex cleanup of name_part: track numbers, empty parens, trailing
+    dash, and dash spacing left uneven by tag removal (glued dashes like
+    "Laz-R" are untouched since they have no space on either side)."""
+    name_part = re.sub(r"^\d{2}\s*-?\s*", "", name_part)
+    name_part = re.sub(r"\s*\(\s*\d+\s*\)\s*$", "", name_part)
+    name_part = re.sub(r"\s+\d+\s*$", "", name_part)
+    name_part = re.sub(r"\(\s*\)", "", name_part)
+    name_part = re.sub(r"\[\s*\]", "", name_part)
+    name_part = re.sub(r"\s*-\s*$", "", name_part)
+    name_part = re.sub(r"(\S)-(\s)", r"\1 -\2", name_part)
+    name_part = re.sub(r"(\s)-(\S)", r"\1- \2", name_part)
+    return re.sub(r"\s+", " ", name_part)
+
+
 def clean_song_filename(file_name):
+    """Parse artist/title out of file_name and clean it into "Artist - Title
+    (Remix info)" style."""
     if "-" not in file_name:
         print("------------------------- Warning -------------------------")
         print("------------------ Couldn't find Artist -------------------")
@@ -132,7 +213,6 @@ def clean_song_filename(file_name):
     file_name = file_name.replace("_", " ")
     file_name = file_name.replace(" [www.slider.kz]", "")
     file_name = file_name.replace("[", "(").replace("]", ")")
-    file_name = file_name.replace("!!!™", "")
 
     new_file_name = title_case_preserving_dots(file_name)
 
@@ -141,29 +221,17 @@ def clean_song_filename(file_name):
         name_part, ext_part = new_file_name, ""
 
     name_part, kept_tags = strip_junk_tags(name_part)
-
-    name_part = re.sub(r"^\d{2}\s*-?\s*", "", name_part)
-    name_part = re.sub(r"\s*\(\s*\d+\s*\)\s*$", "", name_part)
-    name_part = re.sub(r"\s+\d+\s*$", "", name_part)
-    name_part = re.sub(r"\(\s*\)", "", name_part)
-    name_part = re.sub(r"\[\s*\]", "", name_part)
-    name_part = re.sub(r"\s*-\s*$", "", name_part)
-    name_part = re.sub(r"\s+", " ", name_part)
-
-    name_part = name_part.replace("Vip Vip", "VIP2")
-    name_part = name_part.replace("Vip", "VIP")
-    name_part = name_part.replace(" Bootleg", " Remix")
-    name_part = name_part.replace(" VIP)", " Remix)")
-    name_part = name_part.replace(" VIP", " (VIP)")
-
+    name_part = clean_name_part(name_part)
+    name_part = apply_text_fixes(name_part)
+    name_part = convert_named_vip_to_remix(name_part)
+    name_part = wrap_bare_vip(name_part)
+    name_part = name_part.replace(", ", " & ")  # "Artist1, Artist2" -> "Artist1 & Artist2"
     name_part = apply_name_fixes(name_part)
-    name_part = name_part.replace(" X ", " & ").replace(", ", " & ").replace(" Vs ", " & ")
     name_part = lowercase_small_words(name_part)
     name_part = name_part.replace(" .", ".")
     name_part = merge_remixer_credit(name_part)
     name_part = re.sub(r"\s+", " ", name_part).strip()
 
-    # " - " counts as a separator; dashes glued to a word (e.g. "Laz-R") don't.
     final_segments = [s for s in name_part.split(" - ") if s.strip() != ""]
     dash_issue = len(final_segments) != 2
     if dash_issue:
@@ -271,6 +339,7 @@ def process_file(folder_path, file_name, ffmpeg_ok, stats):
         print("Old:", file_name)
         print("New:", new_file_name)
         stats["renamed"] += 1
+        stats["rename_log"].append((file_name, new_file_name))
     else:
         print("----No Rename Needed:", file_name)
         stats["no_rename_needed"] += 1
@@ -279,6 +348,33 @@ def process_file(folder_path, file_name, ffmpeg_ok, stats):
         stats["reencode_reminders"].append(new_file_name)
     else:
         convert_if_needed(folder_path, new_file_name, ffmpeg_ok, stats)
+
+
+def revert_renames(folder_path, rename_log):
+    """Undo filename renames in reverse order (LIFO), so any chained renames
+    unwind correctly. Does NOT undo WAV conversions -- only renames. Skips
+    (with a warning) any step where the expected file isn't there anymore
+    or where reverting would overwrite an existing file, instead of failing
+    the whole revert."""
+    reverted, skipped = 0, 0
+    for old_name, new_name in reversed(rename_log):
+        current_path = os.path.join(folder_path, new_name)
+        original_path = os.path.join(folder_path, old_name)
+
+        if not os.path.isfile(current_path):
+            print(f"---- Skipping revert (file not found): {new_name}")
+            skipped += 1
+            continue
+        if os.path.exists(original_path):
+            print(f"---- Skipping revert (a file already exists at the original name): {old_name}")
+            skipped += 1
+            continue
+
+        os.rename(current_path, original_path)
+        print(f"Reverted: {new_name} -> {old_name}")
+        reverted += 1
+
+    print(f"\nRevert complete. Reverted: {reverted}, Skipped: {skipped}")
 
 
 def print_summary(stats, total_found):
@@ -314,7 +410,7 @@ def main():
     stats = {
         "renamed": 0, "no_rename_needed": 0, "converted": 0, "ignored_misc": 0,
         "ignored_misc_extensions": set(), "ignored": [], "reencode_reminders": [],
-        "dash_warnings": [],
+        "dash_warnings": [], "rename_log": [],
     }
 
     for file_name in os.listdir(folder_path):
@@ -334,7 +430,12 @@ def main():
         + stats["ignored_misc"] + len(stats["ignored"]) + len(stats["reencode_reminders"])
     )
     print_summary(stats, total_found)
-    common.pause_exit()
+
+    print("\n\n\nPress ENTER to exit, or type R and press ENTER to undo all the renames done just now")
+    choice = input().strip().lower()
+    if choice == "r":
+        revert_renames(folder_path, stats["rename_log"])
+        input("\n\nPress ENTER to exit")
 
 
 if __name__ == "__main__":
