@@ -27,7 +27,7 @@ JUNK_TAGS = [
 
 """Word swaps: Need non-alphanumerical symbols around the word/phrase in order to match"""
 TEXT_FIXES = ("Vip Vip -> VIP2, Vip -> VIP, Bootleg -> Remix, X -> &, Vs -> &, "
-              "Akira -> Akirah, Subz -> Subfiltronik")
+              "Akira -> Akirah, Subz -> Subfiltronik, Tw!sty -> Twisty, Ember. -> Ember")
 
 """Word swaps but only to prevent title-casing to mess up special names"""
 NAME_ALLCAPS_FIXES = "LV, AD, NT, IITYX, TEOTI, IP, x87, DGE, DRS, LSB, MPH, JG, ID, DJ, AJ, JJD, FD, R28D"
@@ -46,11 +46,12 @@ AUDIO_EXTENSIONS = PROCESSED_EXTENSIONS + LOSSLESS_EXTENSIONS + LOSSY_EXTENSIONS
 def title_case_preserving_dots(file_name):
     """Title-case file_name up to (but not including) the extension dot,
     capitalizing after each space/paren/hyphen."""
+    ext_dot_index = file_name.rfind(".")
     result = ""
     capitalize_next = True
-    for letter in file_name:
-        if letter == ".":
-            result += file_name[file_name.index("."):]
+    for i, letter in enumerate(file_name):
+        if i == ext_dot_index:
+            result += file_name[ext_dot_index:]
             break
         result += letter.capitalize() if capitalize_next else letter.lower()
         capitalize_next = letter in " ([-"
@@ -64,7 +65,7 @@ def strip_junk_tags(name_part):
     skip the \\b word boundary, since \\b can't match next to punctuation."""
     def is_safe_tail(match):
         rest = match.string[match.end():].lstrip()
-        return not rest or rest[0] in "-)"
+        return not rest or rest[0] in "-()"
 
     def tag_pattern(tag):
         boundary = r"\b" if re.search(r"\w", tag) else ""
@@ -199,6 +200,7 @@ def clean_name_part(name_part):
     name_part = re.sub(r"\s*-\s*$", "", name_part)
     name_part = re.sub(r"(\S)-(\s)", r"\1 -\2", name_part)
     name_part = re.sub(r"(\s)-(\S)", r"\1- \2", name_part)
+    name_part = re.sub(r"(\w)\(", r"\1 (", name_part)
     return re.sub(r"\s+", " ", name_part)
 
 
