@@ -13,24 +13,38 @@ import subprocess
 
 import audio_common as common
 
-"""Junk tags stripped wherever found, whitespace/parens optional, even glued
-to another word ("NAMEv15" -> "NAME"). Longest/most specific first."""
-JUNK_TAGS = [
+"""Junk tags to be stripped. Whitespace/parens optional, even glued
+to another word ("NAMEv15" -> "NAME"). Longest/most specific first.
+
+CAREFUL_JUNK_TAGS: kept (and reported) instead of removed if more real text
+follows -- e.g. "Original Dubplate" -- since these words can plausibly be
+part of a real title/phrase.
+
+STRICT_JUNK_TAGS: always removed wherever found, no matter what follows."""
+CAREFUL_JUNK_TAGS = [
     r"Original\s*Mix", r"Extended\s*Mix", r"Radio\s*Edit", r"Radio\s*Mix", r"Radio\s*Version",
     r"Club\s*Mix", r"Dub\s*Mix", r"Main\s*Mix", r"Album\s*Version", r"Single\s*Version",
-    r"Bonus\s*Track", r"Work\s*In\s*Progress", r"Final\s*Mix", r"Playable", r"Free\s*Dl",
-    r"Free\s*Download", r"V\d+\s*Final",
+    r"Bonus\s*Track", r"Work\s*In\s*Progress", r"Final\s*Mix", r"Playable", r"V\d+",
     r"Original", r"Final", r"Full", r"Free", r"Remastered", r"Remaster", r"Instrumental",
-    r"Acapella", r"Acappella", r"Clean", r"Dirty", r"Explicit", r"Snippet", r"Preview",
-    r"Demo", r"Unreleased", r"WIP", r"HQ", r"HD", r"V\d+", r"!!!", r"™",
+    r"Acapella", r"Acappella", r"Clean", r"Dirty", r"Explicit", r"V\d+\s*Final", r"Demo",
 ]
+
+STRICT_JUNK_TAGS = [
+    r"!!!+", r"™", r"®", r"©", r"Free\s*Dl", r"Free\s*Download", r"Snippet", r"Preview",
+    r"Unreleased", r"WIP", r"HQ", r"HD",
+]
+
+JUNK_TAGS = CAREFUL_JUNK_TAGS + STRICT_JUNK_TAGS
 
 """Word swaps: Need non-alphanumerical symbols around the word/phrase in order to match"""
 TEXT_FIXES = ("Vip Vip -> VIP2, Vip -> VIP, Bootleg -> Remix, X -> &, Vs -> &, "
-              "Akira -> Akirah, Subz -> Subfiltronik, Tw!sty -> Twisty, Ember. -> Ember")
+              "Akira -> Akirah, Subz -> Subfiltronik, Tw!sty -> Twisty, Ember. -> Ember, "
+              "Yunit. -> Yunit")
 
 """Word swaps but only to prevent title-casing to mess up special names"""
-NAME_ALLCAPS_FIXES = "LV, AD, NT, IITYX, TEOTI, IP, x87, DGE, DRS, LSB, MPH, JG, ID, DJ, AJ, JJD, FD, R28D"
+NAME_ALLCAPS_FIXES = (
+    "NB, LV, AD, NT, IITYX, TEOTI, IP, x87, DGE, DRS, LSB, MPH, JG, ID, DJ, AJ, JJD, FD, R28D"
+)
 
 
 
@@ -59,22 +73,35 @@ def title_case_preserving_dots(file_name):
 
 
 def strip_junk_tags(name_part):
-    """Remove JUNK_TAGS. Kept (and reported) instead of removed if more real
-    text follows -- e.g. "Original Dubplate". Runs to a fixed point first so
-    ordering between tags doesn't cause false keeps. Punctuation-only tags
-    skip the \\b word boundary, since \\b can't match next to punctuation."""
+    """Remove STRICT_JUNK_TAGS unconditionally (simple replace, wherever
+    found). Remove CAREFUL_JUNK_TAGS too, but kept (and reported) instead of
+    removed if more real text follows -- e.g. "Original Dubplate". Runs to a
+    fixed point first so ordering between tags doesn't cause false keeps.
+    Punctuation-only tags skip the \\b word boundary, since \\b can't match
+    next to punctuation."""
     def is_safe_tail(match):
         rest = match.string[match.end():].lstrip()
         return not rest or rest[0] in "-()"
 
     def tag_pattern(tag):
         boundary = r"\b" if re.search(r"\w", tag) else ""
-        return rf"\(?\s*{tag}{boundary}\s*\)?"
+        # Consume whitespace *inside* an optional wrapping paren pair (so
+        # "( Snippet )" -> "") but never outer whitespace -- eating outer
+        # whitespace on a tag glued to one side (e.g. "Word!!!" with no
+        # space before the "!!!") would swallow the one real space that
+        # follows it and glue the surrounding words together.
+        return rf"\(\s*{tag}{boundary}\s*\)|{tag}{boundary}"
+
+    # Strict tags: always removed, no fixed-point loop needed (no keep-check
+    # to interact with), but run before the careful loop so e.g. "!!!"
+    # glued next to a careful tag doesn't interfere with its tail check.
+    for tag in STRICT_JUNK_TAGS:
+        name_part = re.sub(tag_pattern(tag), "", name_part, flags=re.IGNORECASE)
 
     changed = True
     while changed:
         changed = False
-        for tag in JUNK_TAGS:
+        for tag in CAREFUL_JUNK_TAGS:
             pattern = tag_pattern(tag)
             new_name_part = re.sub(
                 pattern, lambda m: "" if is_safe_tail(m) else m.group(0),
@@ -85,7 +112,7 @@ def strip_junk_tags(name_part):
                 name_part = new_name_part
 
     kept = []
-    for tag in JUNK_TAGS:
+    for tag in CAREFUL_JUNK_TAGS:
         pattern = tag_pattern(tag)
         kept += [m.group(0).strip() for m in re.finditer(pattern, name_part, re.IGNORECASE) if not is_safe_tail(m)]
 
