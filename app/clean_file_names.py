@@ -31,7 +31,7 @@ CAREFUL_JUNK_TAGS = [
 
 STRICT_JUNK_TAGS = [
     r"!!!+", r"™", r"®", r"©", r"Free\s*Dl", r"Free\s*Download", r"Snippet", r"Preview",
-    r"Unreleased", r"WIP", r"HQ", r"HD",
+    r"Unreleased", r"WIP", r"HQ", r"HD", r"Freebie", r"\d+k", r"Bday", r"Birthday",
 ]
 
 JUNK_TAGS = CAREFUL_JUNK_TAGS + STRICT_JUNK_TAGS
