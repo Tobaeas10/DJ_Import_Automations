@@ -27,6 +27,22 @@ def list_audio_files(folder_path, extensions):
     )
 
 
+# Where the original lossless files are moved after a successful m4a conversion.
+ARCHIVE_FOLDER = r"C:\Users\tobae\Downloads\_Rekordbox\Archive (lossless songs)"
+
+
+def archive_file(src):
+    """Move src into ARCHIVE_FOLDER (created if missing). If a file with that
+    name is already there, it is overwritten (no duplicates).
+    Returns the final path. Works across drives (shutil.move copies then deletes)."""
+    os.makedirs(ARCHIVE_FOLDER, exist_ok=True)
+    dest = os.path.join(ARCHIVE_FOLDER, os.path.basename(src))
+    if os.path.exists(dest):
+        os.remove(dest)  # os.rename (used by shutil.move on the same drive) fails on Windows if dest exists
+    shutil.move(src, dest)
+    return dest
+
+
 # Full path to qaac64.exe if it isn't on PATH (leave as-is when it is).
 QAAC_EXE = "qaac64"
 

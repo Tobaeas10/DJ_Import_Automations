@@ -30,11 +30,13 @@ CAREFUL_JUNK_TAGS = [
     r"Bonus\s*Track", r"Work\s*In\s*Progress", r"Final\s*Mix", r"Playable", r"V\d+",
     r"Original", r"Final", r"Full", r"Free", r"Remastered", r"Remaster", r"Instrumental",
     r"Acapella", r"Acappella", r"Clean", r"Dirty", r"Explicit", r"V\d+\s*Final", r"Demo",
+    r"Final\s*Master", r"Mastered", r"Master",
 ]
 
 STRICT_JUNK_TAGS = [
     r"!!!+", r"™", r"®", r"©", r"Free\s*Dl", r"Free\s*Download", r"Snippet", r"Preview",
-    r"Unreleased", r"WIP", r"HQ", r"HD", r"Freebie", r"\d+k", r"Bday", r"Birthday",
+    r"Unreleased", r"WIP", r"HQ", r"HD", r"Freebie", r"\d+k", r"Bday", r"Birthday", r"\d+\s*bpm",
+    r"\b\d+\s*-?\s*bits?",  # bit-depth tags: "16bit", "24 Bit", "32-bit"
 ]
 
 JUNK_TAGS = CAREFUL_JUNK_TAGS + STRICT_JUNK_TAGS
@@ -46,7 +48,7 @@ TEXT_FIXES = ("Vip Vip -> VIP2, Vip -> VIP, Bootleg -> Remix, X -> &, Vs -> &, "
 
 """Word swaps but only to prevent title-casing to mess up special names"""
 NAME_ALLCAPS_FIXES = (
-    "NB, LV, AD, NT, IITYX, TEOTI, IP, x87, DGE, DRS, LSB, MPH, JG, ID, DJ, AJ, JJD, FD, R28D"
+    "NB, LV, AD, NT, IITYX, TEOTI, IP, x87, DGE, DRS, LSB, MPH, JG, ID, DJ, AJ, JJD, FD, R28D, CMF"
 )
 
 
@@ -162,6 +164,12 @@ def apply_text_fixes(name_part):
     return name_part
 
 
+def convert_named_flip_to_remix(name_part):
+    """"(Someone Flip)" -> "(Someone Remix)". Only inside parens and only with a
+    name before it, so a title word like "Flip The Switch" is never touched."""
+    return re.sub(r"\(([^()]+?)\s+Flip\)", lambda m: f"({m.group(1)} Remix)", name_part, flags=re.IGNORECASE)
+
+
 def convert_named_vip_to_remix(name_part):
     """"(Someone VIP)" -> "(Someone Remix)" -- a VIP credited to a specific
     remixer is really a remix. A bare "(VIP)" with nothing preceding it
@@ -250,6 +258,7 @@ def clean_song_filename(file_name):
     name_part = clean_name_part(name_part)
     name_part = apply_text_fixes(name_part)
     name_part = convert_named_vip_to_remix(name_part)
+    name_part = convert_named_flip_to_remix(name_part)
     name_part = wrap_bare_vip(name_part)
     name_part = name_part.replace(", ", " & ")  # "Artist1, Artist2" -> "Artist1 & Artist2"
     name_part = apply_name_fixes(name_part)

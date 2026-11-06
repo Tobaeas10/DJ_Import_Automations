@@ -1,7 +1,8 @@
 """
 Per-file preprocessing that runs before any filename cleanup:
   1) reorder a tag-confirmed "Title - Artist" filename to "Artist - Title"
-  2) convert every lossless file (wav/flac/aiff/...) to m4a via qaac (TVBR)
+  2) convert every lossless file (wav/flac/aiff/...) to m4a via qaac (TVBR),
+     then move the lossless original to common.ARCHIVE_FOLDER
 
 mp3, m4a and aac are left alone. Formats Pioneer players can't play (ogg, opus,
 wma, mid) are flagged, not converted.
@@ -212,7 +213,8 @@ def run_qaac(qaac, src, out_path):
 
 
 def transcode_to_m4a(folder_path, file_name, qaac):
-    """Convert to .m4a next to the source and delete the source on success.
+    """Convert to .m4a next to the source and move the source to the archive
+    folder (common.ARCHIVE_FOLDER) on success.
     Returns the new filename, or None on failure (source left untouched)."""
     src = os.path.join(folder_path, file_name)
     output_filename = file_name.rpartition(".")[0] + ".m4a"
@@ -239,7 +241,12 @@ def transcode_to_m4a(folder_path, file_name, qaac):
             print("---- Skipping conversion (target name already exists):", output_filename)
             return None
         os.replace(temp_path, output_path)
-    os.remove(src)
+    try:
+        archived = common.archive_file(src)
+        print("Archived original to:", archived)
+    except Exception as e:
+        # The m4a is already in place; keep the lossless original rather than lose it.
+        print("---- Couldn't move the original to the archive folder (left in place):", file_name, "--", e)
     return output_filename
 
 

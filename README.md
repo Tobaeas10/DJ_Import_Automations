@@ -71,8 +71,9 @@ fixes capitalization, strips junk tags like `(Original Mix)` or `(Radio
 Edit)`, merges remixer credits into a trailing `(X Remix)`, and normalizes
 things like `VIP`/`Bootleg`. Every lossless file (wav, flac, aiff, alac,
 ape, wv, dsf, dff) is encoded to `.m4a` with qaac (AAC TVBR, quality set
-by `QAAC_TVBR` in `app/preprocessing.py`) and the original is deleted once
-the encode succeeded. mp3, m4a and aac files are kept as they are. Formats
+by `QAAC_TVBR` in `app/preprocessing.py`) and the original is moved to the
+archive folder set by `ARCHIVE_FOLDER` in `app/audio_common.py` once the
+encode succeeded (created if missing; a file with the same name already there is overwritten). mp3, m4a and aac files are kept as they are. Formats
 Pioneer players can't play (ogg, opus, wma, mid) are renamed but not
 converted, and are listed at the end so you can handle them manually.
 
