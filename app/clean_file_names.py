@@ -1,17 +1,20 @@
 """
 Batch-cleans song filenames in your work folder into a consistent
-"Artist - Title (Remix info)" style, and auto-converts lossless audio
-(flac, aiff, alac, ape, wv, dsf, dff) to .wav via ffmpeg. Lossy formats
-(m4a, aac, ogg, opus, wma, mid) are renamed but left in their original
-codec. Existing float-PCM .wav files are also re-encoded to standard PCM.
+"Artist - Title (Remix info)" style. Per-file preprocessing (tag-based
+"Title - Artist" reordering, and lossless conversion to m4a via qaac)
+lives in preprocessing.py and runs before the renaming logic here.
 """
 
 import os
 import re
-import struct
-import subprocess
+from concurrent.futures import ThreadPoolExecutor
+
+PARALLEL_MIN_FILES = 10  # only encode in parallel when at least this many files need converting
 
 import audio_common as common
+import preprocessing as pre
+
+AUDIO_EXTENSIONS = pre.AUDIO_EXTENSIONS
 
 """Junk tags to be stripped. Whitespace/parens optional, even glued
 to another word ("NAMEv15" -> "NAME"). Longest/most specific first.
@@ -50,12 +53,6 @@ NAME_ALLCAPS_FIXES = (
 
 # Non-User-intended lists
 LOWERCASE_WORDS = ["Is", "To", "It", "Of", "By", "A", "An", "Out", "The", "From", "My"]
-
-PROCESSED_EXTENSIONS = (".wav", ".mp3")
-LOSSLESS_EXTENSIONS = (".flac", ".aiff", ".aif", ".alac", ".ape", ".wv", ".dsf", ".dff")
-LOSSY_EXTENSIONS = (".m4a", ".aac", ".ogg", ".opus", ".wma", ".mid", ".midi")
-AUDIO_EXTENSIONS = PROCESSED_EXTENSIONS + LOSSLESS_EXTENSIONS + LOSSY_EXTENSIONS
-
 
 def title_case_preserving_dots(file_name):
     """Title-case file_name up to (but not including) the extension dot,
@@ -271,84 +268,12 @@ def clean_song_filename(file_name):
     return name_part + ("." + ext_part if ext_part else ""), dash_issue, kept_tags
 
 
-def transcode_to_wav(folder_path, file_name):
-    """Convert to .wav in place, preserving metadata. Returns new filename, or None on failure."""
-    original_path = os.path.join(folder_path, file_name)
-    base_name, _, _ = file_name.rpartition(".")
-    output_filename = base_name + ".wav"
-    output_path = os.path.join(folder_path, output_filename)
+def process_file(folder_path, file_name, tools, stats, prepped=None):
+    file_name, prep = prepped or pre.preprocess_file(folder_path, file_name, tools)
+    stats["rename_log"] += prep["renames"]
+    stats["reordered"] += int(prep["reordered"])
+    stats["converted"] += int(prep["converted"])
 
-    temp_path = os.path.join(folder_path, file_name + "_to_be_converted")
-    os.rename(original_path, temp_path)
-
-    try:
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", temp_path, "-map_metadata", "0", output_path],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            creationflags=subprocess.CREATE_NO_WINDOW, check=True,
-        )
-    except subprocess.CalledProcessError:
-        if os.path.exists(temp_path):
-            os.rename(temp_path, original_path)
-        return None
-
-    if os.path.exists(temp_path):
-        os.remove(temp_path)
-    return output_filename
-
-
-def is_float_wav(path):
-    """True if the wav's fmt chunk declares IEEE-float samples."""
-    try:
-        with open(path, "rb") as f:
-            riff = f.read(12)
-            if len(riff) < 12 or riff[0:4] != b"RIFF" or riff[8:12] != b"WAVE":
-                return False
-            while True:
-                header = f.read(8)
-                if len(header) < 8:
-                    return False
-                chunk_id, chunk_size = struct.unpack("<4sI", header)
-                if chunk_id == b"fmt ":
-                    fmt_data = f.read(chunk_size)
-                    audio_format = struct.unpack("<H", fmt_data[0:2])[0]
-                    if audio_format == 0xFFFE:  # WAVE_FORMAT_EXTENSIBLE
-                        sub_format = struct.unpack("<H", fmt_data[24:26])[0]
-                        return sub_format == 0x0003
-                    return audio_format == 0x0003  # WAVE_FORMAT_IEEE_FLOAT
-                f.seek(chunk_size + (chunk_size % 2), 1)
-    except Exception:
-        return False
-
-
-def convert_if_needed(folder_path, file_name, ffmpeg_ok, stats):
-    """Convert to WAV if lossless or float-PCM. Updates stats in place."""
-    lower_name = file_name.lower()
-
-    needs_conversion = False
-    if lower_name.endswith(LOSSLESS_EXTENSIONS):
-        needs_conversion = True
-    elif lower_name.endswith(".wav") and is_float_wav(os.path.join(folder_path, file_name)):
-        needs_conversion = True
-
-    if not needs_conversion:
-        return
-
-    if not ffmpeg_ok:
-        print("---- Skipping conversion (ffmpeg not found on PATH):", file_name)
-        stats["ignored"].append(file_name)
-        return
-
-    converted_name = transcode_to_wav(folder_path, file_name)
-    if converted_name:
-        print("Converted to WAV:", file_name, "->", converted_name)
-        stats["converted"] += 1
-    else:
-        print("---- ffmpeg conversion failed for:", file_name)
-        stats["ignored"].append(file_name)
-
-
-def process_file(folder_path, file_name, ffmpeg_ok, stats):
     try:
         new_file_name, dash_issue, kept_tags = clean_song_filename(file_name)
     except Exception as e:
@@ -358,11 +283,16 @@ def process_file(folder_path, file_name, ffmpeg_ok, stats):
 
     if dash_issue:
         stats["dash_warnings"].append(new_file_name)
-
     if kept_tags:
         print(f"     (kept possibly-junk tag(s), followed by more text: {', '.join(kept_tags)})")
 
     if new_file_name != file_name:
+        src_p = os.path.join(folder_path, file_name)
+        dst_p = os.path.join(folder_path, new_file_name)
+        if os.path.exists(dst_p) and not os.path.samefile(src_p, dst_p):
+            print("---- Skipping rename (a file with the cleaned name already exists):", file_name, "->", new_file_name)
+            stats["ignored"].append(file_name)
+            return
         os.rename(os.path.join(folder_path, file_name), os.path.join(folder_path, new_file_name))
         print("Renamed:")
         print("Old:", file_name)
@@ -373,15 +303,15 @@ def process_file(folder_path, file_name, ffmpeg_ok, stats):
         print("----No Rename Needed:", file_name)
         stats["no_rename_needed"] += 1
 
-    if new_file_name.lower().endswith(LOSSY_EXTENSIONS):
-        stats["reencode_reminders"].append(new_file_name)
-    else:
-        convert_if_needed(folder_path, new_file_name, ffmpeg_ok, stats)
+    if prep["unsupported"]:
+        stats["unsupported"].append(new_file_name)
+    elif prep["failed"]:
+        stats["ignored"].append(new_file_name)
 
 
 def revert_renames(folder_path, rename_log):
     """Undo filename renames in reverse order (LIFO), so any chained renames
-    unwind correctly. Does NOT undo WAV conversions -- only renames. Skips
+    unwind correctly. Does NOT undo m4a conversions -- only renames. Skips
     (with a warning) any step where the expected file isn't there anymore
     or where reverting would overwrite an existing file, instead of failing
     the whole revert."""
@@ -411,18 +341,20 @@ def print_summary(stats, total_found):
     print("Found:", total_found)
     print("Renamed:", stats["renamed"])
     print("No Rename Needed:", stats["no_rename_needed"])
-    print("Converted to WAV:", stats["converted"])
+    print("Reordered to Artist - Title (from tags):", stats["reordered"])
+    print("Converted to M4A:", stats["converted"])
     print("__________________")
     misc_extensions = f" ({', '.join(sorted(stats['ignored_misc_extensions']))})" if stats["ignored_misc_extensions"] else ""
     print("\nMisc. Ignored:", stats["ignored_misc"], misc_extensions)
 
-    all_ignored_songs = stats["ignored"] + stats["reencode_reminders"]
-    print("Ignored Songs:", len(all_ignored_songs))
-    for song in all_ignored_songs:
+    print("Ignored Songs:", len(stats["ignored"]))
+    for song in stats["ignored"]:
         print(song)
 
-    if stats["reencode_reminders"]:
-        print("\nSome songs need to be re-encoded!")
+    if stats["unsupported"]:
+        print("\nNot playable on Pioneer hardware, convert these manually:")
+        for song in stats["unsupported"]:
+            print(song)
     if stats["dash_warnings"]:
         print("\nMissing or Multiple dashes:")
     for song in stats["dash_warnings"]:
@@ -432,16 +364,15 @@ def print_summary(stats, total_found):
 def main():
     folder_path = common.work_folder(__file__)
 
-    ffmpeg_ok = common.check_ffmpeg_available(
-        "convert lossless files (flac/aiff/alac/ape/wv/dsf/dff) and float-PCM wavs"
-    )
+    tools = pre.check_dependencies()
 
     stats = {
         "renamed": 0, "no_rename_needed": 0, "converted": 0, "ignored_misc": 0,
-        "ignored_misc_extensions": set(), "ignored": [], "reencode_reminders": [],
-        "dash_warnings": [], "rename_log": [],
+        "ignored_misc_extensions": set(), "ignored": [], "unsupported": [],
+        "dash_warnings": [], "rename_log": [], "reordered": 0,
     }
 
+    audio_files = []
     for file_name in os.listdir(folder_path):
         path_to_file = os.path.join(folder_path, file_name)
         if not os.path.isfile(path_to_file):
@@ -452,11 +383,31 @@ def main():
             stats["ignored_misc_extensions"].add(os.path.splitext(file_name)[1].lower() or "(no ext)")
             continue
 
-        process_file(folder_path, file_name, ffmpeg_ok, stats)
+        audio_files.append(file_name)
+
+    # Phase 1: tag reordering + m4a encoding, in parallel (subprocess-bound, so threads are enough).
+    # Phase 2: renaming/stats, sequential, so output and collision handling stay deterministic.
+    def prep_one(name):
+        try:
+            return pre.preprocess_file(folder_path, name, tools)
+        except Exception as e:
+            print("---- Error while preprocessing:", name, "--", e)
+            return name, {"renames": [], "reordered": False, "converted": False, "failed": True, "unsupported": False}
+
+    to_convert = sum(1 for f in audio_files if f.lower().endswith(pre.LOSSLESS_EXTENSIONS))
+    if to_convert >= PARALLEL_MIN_FILES:
+        print(f"Encoding {to_convert} file(s) with {pre.ENCODE_WORKERS} parallel workers...")
+        with ThreadPoolExecutor(max_workers=pre.ENCODE_WORKERS) as pool:
+            prepped_all = list(pool.map(prep_one, audio_files))
+    else:
+        prepped_all = [prep_one(f) for f in audio_files]  # too few to be worth the parallel overhead
+
+    for original_name, prepped in zip(audio_files, prepped_all):
+        process_file(folder_path, original_name, tools, stats, prepped)
 
     total_found = (
-        stats["renamed"] + stats["no_rename_needed"] + stats["converted"]
-        + stats["ignored_misc"] + len(stats["ignored"]) + len(stats["reencode_reminders"])
+        stats["renamed"] + stats["no_rename_needed"]
+        + stats["ignored_misc"] + len(stats["ignored"])
     )
     print_summary(stats, total_found)
 

@@ -27,6 +27,17 @@ def list_audio_files(folder_path, extensions):
     )
 
 
+# Full path to qaac64.exe if it isn't on PATH (leave as-is when it is).
+QAAC_EXE = "qaac64"
+
+
+def find_qaac():
+    """Path to qaac64 (QAAC_EXE as a file path, else looked up on PATH), or None."""
+    if os.path.isfile(QAAC_EXE):
+        return QAAC_EXE
+    return shutil.which(QAAC_EXE) or shutil.which("qaac64") or shutil.which("qaac")
+
+
 def pause_exit(code=None):
     """Standard 'press enter to close the console window' pause."""
     input("\n\n\nPress ENTER to exit")

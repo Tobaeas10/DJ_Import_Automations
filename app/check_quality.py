@@ -1,7 +1,8 @@
 """
 Flags audio files that are probably low quality (nothing above ~16kHz) or
 probably faked (high-freq noise not tracking the music). Report only, no
-renaming. Requires: pip install librosa numpy scipy mutagen (+ ffmpeg).
+renaming. Run it BEFORE the clean/convert step, while lossless files are still
+lossless (a spectrum check on an AAC encode says nothing). Requires: pip install librosa numpy scipy mutagen (+ ffmpeg).
 """
 
 import os

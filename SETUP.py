@@ -16,9 +16,15 @@ REQUIRED_PACKAGES = ["mutagen", "librosa", "numpy", "scipy"]
 
 # (script filename, launcher display name)
 TOOLS = [
-    ("clean_file_names.py", "___Step 1___ Clean File Names and Re-encode"),
-    ("check_quality.py", "___Step 2___ Check Audio Quality"),
+    ("check_quality.py", "___Step 1___ Check Audio Quality"),
+    ("clean_file_names.py", "___Step 2___ Clean File Names and Convert to M4A"),
     ("filename_to_tag.py", "___Step 3___ Convert File Names to Tag"),
+]
+
+# Launchers from the old step order, removed so they don't run the wrong script
+OLD_LAUNCHER_NAMES = [
+    "___Step 1___ Clean File Names and Re-encode",
+    "___Step 2___ Check Audio Quality",
 ]
 
 
@@ -140,6 +146,14 @@ def setup_ffmpeg():
         print("ffmpeg was not installed automatically. Please install it manually (see above) and re-run setup.\n")
 
 
+def setup_qaac():
+    if common.find_qaac():
+        print("qaac found.\n")
+        return
+    print("qaac64 was not found. Lossless files can't be converted to m4a without it.")
+    print("Put qaac64.exe on PATH, or set QAAC_EXE (full path) at the top of app/audio_common.py.\n")
+
+
 def launcher_content(python_exe, script_path, system):
     if system == "Windows":
         return f'@echo off\r\n"{python_exe}" "{script_path}"\r\n'
@@ -170,6 +184,13 @@ def create_launchers():
     work_dir = os.path.dirname(DEPLOYMENT_DIR)
     system = platform.system()
 
+    for old_name in OLD_LAUNCHER_NAMES:
+        for ext in (".bat", ".command", ".sh"):
+            old_path = os.path.join(work_dir, old_name + ext)
+            if os.path.isfile(old_path):
+                os.remove(old_path)
+                print(" - removed outdated launcher:", os.path.basename(old_path))
+
     print("Creating launchers in your work folder...")
     for script_name, display_name in TOOLS:
         launcher_path = create_launcher(work_dir, APP_DIR, script_name, display_name, system)
@@ -181,6 +202,7 @@ def main():
     print("==================== Riddim Automation Setup ====================\n")
     check_python_version()
     setup_ffmpeg()
+    setup_qaac()
     install_python_packages()
     create_launchers()
     print("==================== Setup complete! ====================")

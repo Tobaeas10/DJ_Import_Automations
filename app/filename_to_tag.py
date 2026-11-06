@@ -1,5 +1,5 @@
 """
-Wipes all tags (keeping cover art) and re-derives Artist/Title from the
+Wipes all tags (keeping cover art, and the m4a gapless iTunSMPB atom) and re-derives Artist/Title from the
 filename, splitting on the first " - ". Files with no " - " are skipped.
 Requires: pip install mutagen
 """
@@ -11,12 +11,14 @@ import audio_common as common
 try:
     from mutagen.mp3 import MP3
     from mutagen.wave import WAVE
+    from mutagen.mp4 import MP4
     from mutagen.id3 import TIT2, TPE1
 except Exception:
     common.report_import_failure("mutagen")
     raise SystemExit(1)
 
-AUDIO_EXTENSIONS = (".mp3", ".wav")
+AUDIO_EXTENSIONS = (".mp3", ".wav", ".m4a")
+MP4_KEEP_KEYS = ("covr", "----:com.apple.iTunes:iTunSMPB")
 
 
 def load_audio(path):
@@ -25,6 +27,8 @@ def load_audio(path):
         return MP3(path)
     if lower.endswith(".wav"):
         return WAVE(path)
+    if lower.endswith(".m4a"):
+        return MP4(path)
     return None
 
 
@@ -104,7 +108,14 @@ def write_wav_info_chunk(path, artist, title):
 
 
 def strip_tags_keep_cover(audio):
-    """Delete every tag frame except APIC (cover art)."""
+    """Delete every tag frame except cover art (APIC / covr)."""
+    if isinstance(audio, MP4):
+        if audio.tags is None:
+            audio.add_tags()
+        for key in [k for k in audio.tags.keys() if k not in MP4_KEEP_KEYS]:
+            del audio.tags[key]
+        return
+
     if audio.tags is None:
         audio.add_tags()
         return
@@ -121,6 +132,10 @@ def set_title_artist(audio, base_name):
     if sep == "":
         return None
     artist, title = artist.strip(), title.strip()
+    if isinstance(audio, MP4):
+        audio.tags["\xa9ART"] = [artist]
+        audio.tags["\xa9nam"] = [title]
+        return artist, title
     audio.tags.add(TPE1(encoding=3, text=[artist]))
     audio.tags.add(TIT2(encoding=3, text=[title]))
     return artist, title
@@ -140,7 +155,10 @@ def retag_file(folder_path, name):
         artist_title = set_title_artist(audio, base_name)
         # v1=2 forces mutagen to also remove any legacy ID3v1 tag (the trailing
         # 128 bytes some tools still read as a fallback) instead of rewriting it.
-        audio.save(v1=2)
+        if isinstance(audio, MP4):
+            audio.save()
+        else:
+            audio.save(v1=2)
         if path.lower().endswith(".wav"):
             strip_wav_list_chunks(path)
             if artist_title is not None:
